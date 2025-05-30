@@ -4,10 +4,8 @@ import httpx
 import json
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import asyncio
-import time
-from typing import Tuple
 
 # Configuration
 AGENT_URLS = {
@@ -50,6 +48,18 @@ async def send_message(agent_type: str, message_text: str) -> Dict:
     except Exception as e:
         return {"error": {"message": str(e)}}
 
+def format_response_part(part: Dict) -> str:
+    """Format a single response part for display"""
+    if part["kind"] == "text":
+        return part["text"]
+    elif part["kind"] == "data":
+        try:
+            # Pretty print JSON data
+            return f"```json\n{json.dumps(part['data'], indent=2)}\n```"
+        except:
+            return str(part["data"])
+    return str(part)
+
 def display_response(response: Dict):
     """Display A2A response in a user-friendly way"""
     if "error" in response:
@@ -57,29 +67,19 @@ def display_response(response: Dict):
         return
     
     result = response.get("result", {})
+    status = result.get("status", {})
     
-    # Check if the response follows the A2A task structure
-    if "status" in result:
-        status = result["status"]
-        if status.get("state"):
-            st.success(f"Status: {status['state']}")
-        
-        if "message" in status:
-            message = status["message"]
-            for part in message.get("parts", []):
-                if part["kind"] == "text":
-                    st.info(part["text"])
-                elif part["kind"] == "data":
-                    st.write("Data received:")
-                    st.json(part["data"])
+    if status.get("state"):
+        st.success(f"Status: {status['state'].capitalize()}")
     
-    # Check if the response contains data directly
-    elif isinstance(result, dict) and result:
-        st.write("Response data:")
-        st.json(result)
-    else:
-        st.warning("Received empty or unexpected response format")
-        st.json(response)
+    if "message" in status:
+        message = status["message"]
+        for part in message.get("parts", []):
+            formatted = format_response_part(part)
+            if part["kind"] == "text":
+                st.info(formatted)
+            elif part["kind"] == "data":
+                st.markdown(formatted)
 
 # Async helper to run coroutines in Streamlit
 def run_async(coro):
@@ -91,12 +91,23 @@ def run_async(coro):
     finally:
         loop.close()
 
+# Initialize session state
+def init_session_state():
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    if 'selected_agent' not in st.session_state:
+        st.session_state.selected_agent = "coordinator"
+    if 'agent_cards' not in st.session_state:
+        st.session_state.agent_cards = {}
+
 # Page Layout
 st.set_page_config(
     page_title="Hospital A2A System",
     page_icon="🏥",
     layout="wide"
 )
+
+init_session_state()
 
 # Sidebar - System Status
 st.sidebar.title("System Status")
@@ -108,6 +119,7 @@ for i, agent_type in enumerate(AGENT_URLS.keys()):
         try:
             card = run_async(get_agent_card(agent_type))
             if card:
+                st.session_state.agent_cards[agent_type] = card
                 st.success(f"✅ {agent_type.capitalize()}")
             else:
                 st.error(f"❌ {agent_type.capitalize()}")
@@ -127,7 +139,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Doctor Search", 
     "Appointment Booking", 
     "Coordinator Workflow",
-    "Debug Console"
+    "Chat Interface"
 ])
 
 # Patient Registration Tab
@@ -328,25 +340,68 @@ with tab4:
                     response = run_async(send_message("coordinator", message))
                     display_response(response)
 
-# Debug Console Tab
+# Chat Interface Tab
 with tab5:
-    st.header("Debug Console")
+    st.header("Chat Interface")
     st.markdown("""
-    Directly test A2A messages and view raw responses. Useful for debugging.
+    Have a conversation with any of the hospital agents. This interface maintains context 
+    across multiple messages for more natural interactions.
     """)
     
-    with st.expander("Raw Message Tester"):
-        agent_type = st.selectbox("Select Agent", list(AGENT_URLS.keys()), key="debug_agent")
-        message_text = st.text_area("Message Content", key="debug_message")
+    # Chat controls
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        user_input = st.text_input("Your message:", key="chat_input")
+    with col2:
+        st.session_state.selected_agent = st.selectbox(
+            "Agent:",
+            ["coordinator", "patient", "doctor", "booking"],
+            key="agent_select",
+            format_func=lambda x: x.capitalize()
+        )
+    
+    send_button = st.button("Send")
+    
+    # Handle chat
+    if send_button and user_input:
+        # Add user message to history
+        st.session_state.chat_history.append(("user", user_input))
         
-        if st.button("Send Message"):
-            with st.spinner("Sending message..."):
-                response = run_async(send_message(agent_type, message_text))
-                st.subheader("Raw Response")
-                st.json(response)
-                
-                st.subheader("Formatted Response")
-                display_response(response)
+        # Get agent response
+        with st.spinner(f"Waiting for {st.session_state.selected_agent} response..."):
+            response = run_async(send_message(st.session_state.selected_agent, user_input))
+            
+            # Process response
+            if "result" in response and "status" in response["result"]:
+                status = response["result"]["status"]
+                if "message" in status:
+                    for part in status["message"].get("parts", []):
+                        formatted = format_response_part(part)
+                        st.session_state.chat_history.append((st.session_state.selected_agent, formatted))
+            elif "error" in response:
+                st.session_state.chat_history.append(("system", f"Error: {response['error']['message']}"))
+    
+    # Display chat history
+    st.markdown("---")
+    st.subheader("Conversation History")
+    
+    for role, message in st.session_state.chat_history:
+        if role == "user":
+            st.markdown(f"**You**: {message}")
+        elif role == "system":
+            st.error(message)
+        else:
+            # Display agent responses with appropriate formatting
+            if message.startswith("```json"):
+                st.markdown(f"**{role.capitalize()} Agent**:")
+                st.json(json.loads(message[7:-3]))  # Extract JSON from markdown code block
+            else:
+                st.markdown(f"**{role.capitalize()} Agent**: {message}")
+    
+    # Clear chat button
+    if st.button("Clear Conversation"):
+        st.session_state.chat_history = []
+        st.experimental_rerun()
 
 # About Section
 st.sidebar.markdown("---")
@@ -364,3 +419,14 @@ The backend system consists of specialized agents:
 - Doctor Availability (Port 8002)
 - Appointment Booking (Port 8003)
 """)
+
+# Display agent cards in sidebar if available
+if st.session_state.agent_cards:
+    st.sidebar.markdown("---")
+    st.sidebar.header("Agent Details")
+    selected_agent_card = st.sidebar.selectbox(
+        "View Agent Card:",
+        list(st.session_state.agent_cards.keys()),
+        format_func=lambda x: x.capitalize()
+    )
+    st.sidebar.json(st.session_state.agent_cards[selected_agent_card])
