@@ -1,0 +1,268 @@
+version: '3.8'
+
+services:
+  # Hospital Coordinator Agent - Main orchestration service
+  coordinator:
+    build: .
+    ports:
+      - "8000:8000"
+    command: python hospital_a2a_system.py coordinator
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - hospital-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/.well-known/agent.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Patient Registration Agent
+  patient-agent:
+    build: .
+    ports:
+      - "8001:8001"
+    command: python hospital_a2a_system.py patient
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - hospital-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/.well-known/agent.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Doctor Availability Agent
+  doctor-agent:
+    build: .
+    ports:
+      - "8002:8002"
+    command: python hospital_a2a_system.py doctor
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - hospital-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/.well-known/agent.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Appointment Booking Agent
+  booking-agent:
+    build: .
+    ports:
+      - "8003:8003"
+    command: python hospital_a2a_system.py booking
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - hospital-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/.well-known/agent.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # HIPAA-Compliant Patient Agent (Optional - for enhanced security demo)
+  hipaa-agent:
+    build: .
+    ports:
+      - "8004:8004"
+    command: python -c "
+      from hospital_a2a_system import HIPAACompliantPatientAgent;
+      agent = HIPAACompliantPatientAgent();
+      print('🔐 Starting HIPAA-Compliant Patient Agent on port 8004...');
+      agent.run()"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - hospital-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/.well-known/agent.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    profiles:
+      - full  # Only start with --profile full
+
+  # Streaming Analysis Agent (Optional - for streaming demo)
+  streaming-agent:
+    build: .
+    ports:
+      - "8005:8005"
+    command: python -c "
+      from hospital_a2a_system import StreamingA2AAgent;
+      agent = StreamingA2AAgent();
+      print('📊 Starting Streaming Analysis Agent on port 8005...');
+      agent.run()"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - hospital-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/.well-known/agent.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    profiles:
+      - full  # Only start with --profile full
+
+  # Streamlit Frontend
+  frontend:
+    build: .
+    ports:
+      - "8501:8501"
+    command: streamlit run frontend.py --server.port=8501 --server.address=0.0.0.0
+    environment:
+      - PYTHONUNBUFFERED=1
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_SERVER_ENABLE_CORS=false
+      - STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false
+    networks:
+      - hospital-network
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      patient-agent:
+        condition: service_healthy
+      doctor-agent:
+        condition: service_healthy
+      booking-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Redis for caching and session management (Optional)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - hospital-network
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    profiles:
+      - full
+
+  # PostgreSQL for production data persistence (Optional)
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=hospital_a2a
+      - POSTGRES_USER=hospital_user
+      - POSTGRES_PASSWORD=secure_password_123
+    networks:
+      - hospital-network
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hospital_user -d hospital_a2a"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    profiles:
+      - full
+
+  # Nginx reverse proxy for production (Optional)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    networks:
+      - hospital-network
+    depends_on:
+      - frontend
+      - coordinator
+    restart: unless-stopped
+    profiles:
+      - production
+
+  # Monitoring with Prometheus (Optional)
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - hospital-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # Grafana for visualization (Optional)
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - hospital-network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+networks:
+  hospital-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis-data:
+    driver: local
+  postgres-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+# Health check script for all services
+x-healthcheck-curl: &healthcheck-curl
+  test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s
