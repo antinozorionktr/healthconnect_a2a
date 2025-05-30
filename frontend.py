@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import asyncio
 import time
+from typing import Tuple
 
 # Configuration
 AGENT_URLS = {
@@ -314,6 +315,102 @@ with tab4:
                 with st.spinner("Running complete workflow..."):
                     response = run_async(send_message("coordinator", message))
                     display_response(response)
+
+async def chat_with_agent(agent_type: str, message_history: List[Tuple[str, str]]) -> Tuple[Dict, List[Tuple[str, str]]]:
+    """Handle a chat conversation with an agent"""
+    try:
+        # Format the message history
+        chat_context = "\n".join([f"{role}: {msg}" for role, msg in message_history[-5:]])  # Keep last 5 messages
+        
+        # Get the user's latest message
+        user_message = message_history[-1][1]
+        
+        # Send to agent with context
+        response = await send_message(agent_type, f"Chat context:\n{chat_context}\n\nNew message: {user_message}")
+        
+        # Get agent's reply
+        agent_reply = ""
+        if "result" in response and "status" in response["result"]:
+            status = response["result"]["status"]
+            if "message" in status:
+                for part in status["message"].get("parts", []):
+                    if part["kind"] == "text":
+                        agent_reply = part["text"]
+                        break
+        
+        # Update message history
+        message_history.append(("agent", agent_reply))
+        
+        return response, message_history
+    except Exception as e:
+        st.error(f"Chat error: {str(e)}")
+        return {"error": {"message": str(e)}}, message_history
+
+# In the tabs section, add a new chat tab (replace the current tab1, tab2... line)
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Patient Registration", 
+    "Doctor Search", 
+    "Appointment Booking", 
+    "Coordinator Workflow",
+    "Chat Interface"
+])
+
+# Add this new tab at the end (before the About Section)
+with tab5:
+    st.header("Chat Interface")
+    st.markdown("""
+    Have a conversation with any of the hospital agents. This interface maintains context 
+    across multiple messages for more natural interactions.
+    """)
+    
+    # Initialize chat session
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    if 'selected_agent' not in st.session_state:
+        st.session_state.selected_agent = "coordinator"
+    
+    # Chat controls
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        user_input = st.text_input("Your message:", key="chat_input")
+    with col2:
+        st.session_state.selected_agent = st.selectbox(
+            "Agent:",
+            ["coordinator", "patient", "doctor", "booking"],
+            key="agent_select"
+        )
+    
+    send_button = st.button("Send")
+    
+    # Handle chat
+    if send_button and user_input:
+        # Add user message to history
+        st.session_state.chat_history.append(("user", user_input))
+        
+        # Get agent response
+        with st.spinner(f"Waiting for {st.session_state.selected_agent} response..."):
+            response, updated_history = run_async(
+                chat_with_agent(
+                    st.session_state.selected_agent,
+                    st.session_state.chat_history
+                )
+            )
+            st.session_state.chat_history = updated_history
+    
+    # Display chat history
+    st.markdown("---")
+    st.subheader("Conversation History")
+    
+    for role, message in st.session_state.chat_history:
+        if role == "user":
+            st.markdown(f"**You**: {message}")
+        else:
+            st.markdown(f"**{st.session_state.selected_agent.capitalize()} Agent**: {message}")
+    
+    # Clear chat button
+    if st.button("Clear Conversation"):
+        st.session_state.chat_history = []
+        st.experimental_rerun()
 
 # About Section
 st.sidebar.markdown("---")
